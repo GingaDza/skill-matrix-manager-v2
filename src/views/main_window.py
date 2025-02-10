@@ -1,184 +1,462 @@
-"""メインウィンドウ
-Created: 2025-02-08 20:41:10
+"""
+メインウィンドウ実装
+Created: 2025-02-09 09:32:46
 Author: GingaDza
 """
 from PyQt5.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
-    QTabWidget, QMessageBox, QSplitter, QComboBox,
-    QListWidget, QPushButton, QLabel
+    QLabel, QComboBox, QListWidget, QPushButton,
+    QDialog, QLineEdit, QMessageBox, QTabWidget,
+    QSpinBox, QFrame, QGridLayout, QListWidgetItem
 )
 from PyQt5.QtCore import Qt
-from ..utils.logger import setup_logger
-from ..utils.system_info import SystemInfo
-from ..database.user_manager import UserManager
-from ..database.group_manager import GroupManager
-from .tabs.system_tab import SystemTab
-from .tabs.category_tab import CategoryTab
-from .tabs.data_io_tab import DataIOTab
-from .tabs.radar_chart_tab import RadarChartTab
+from .custom_widgets.radar_chart import RadarChartWidget
+from .custom_widgets.skill_grid import SkillGridWidget
 
 class MainWindow(QMainWindow):
-    def __init__(self):
-        super().__init__()
-        self.logger = setup_logger(__name__)
-        self.system_info = SystemInfo()
-        self.user_manager = UserManager()
-        self.group_manager = GroupManager()
-        self._init_ui()
-        self._load_initial_data()
+    def __init__(self, db=None, parent=None):
+        super().__init__(parent)
+        self.db = db
+        self.current_user_id = None
+        self.categories = []
+        self.skill_grids = {}
+        self.init_ui()
+        if self.db:
+            self.refresh_groups()
+            self.refresh_categories()
 
-    def _init_ui(self):
-        self.setWindowTitle(f"Skill Matrix Manager - v{self.system_info.app_version}")
-        self.setGeometry(100, 100, 1400, 800)
-
-        central_widget = QWidget()
-        self.setCentralWidget(central_widget)
-        main_layout = QVBoxLayout(central_widget)
-
-        # 3:7分割のスプリッター
-        splitter = QSplitter(Qt.Horizontal)
+    def init_ui(self):
+        """UIの初期化"""
+        self.setWindowTitle("スキルマトリックスマネージャー")
+        self.setGeometry(100, 100, 1200, 800)
         
-        # 左パネル（3）
-        left_panel = self._create_left_panel()
-        splitter.addWidget(left_panel)
+        # メインウィジェット
+        main_widget = QWidget()
+        self.setCentralWidget(main_widget)
         
-        # 右パネル（7）
-        right_panel = self._create_right_panel()
-        splitter.addWidget(right_panel)
+        # メインレイアウト
+        layout = QHBoxLayout(main_widget)
         
-        # 分割比率の設定
-        splitter.setSizes([300, 700])
-        main_layout.addWidget(splitter)
+        # 左側のパネル（グループとユーザー）
+        left_panel = QWidget()
+        left_layout = QVBoxLayout(left_panel)
+        
+        # グループ管理セクション
+        left_layout.addWidget(self._create_group_section())
+        
+        # ユーザー管理セクション
+        left_layout.addWidget(self._create_user_section())
+        
+        layout.addWidget(left_panel, stretch=1)
+        
+        # 右側のパネル（スキル管理）
+        right_panel = QWidget()
+        right_layout = QVBoxLayout(right_panel)
+        
+        # カテゴリー管理セクション
+        right_layout.addWidget(self._create_category_section())
+        
+        # スキル管理タブ
+        self.skill_tabs = QTabWidget()
+        right_layout.addWidget(self.skill_tabs)
+        
+        # レーダーチャート
+        self.radar_chart = RadarChartWidget(["未設定"])
+        right_layout.addWidget(self.radar_chart)
+        
+        layout.addWidget(right_panel, stretch=2)
 
-        self.statusBar().showMessage(
-            f"ログインユーザー: {self.system_info.current_user} | "
-            f"最終更新: {self.system_info.current_time}"
-        )
+    def _create_section(self, title):
+        """セクションの作成"""
+        section = QFrame()
+        section.setFrameStyle(QFrame.StyledPanel | QFrame.Raised)
+        layout = QVBoxLayout(section)
+        
+        # タイトル
+        title_label = QLabel(title)
+        title_label.setStyleSheet("font-weight: bold; font-size: 14px;")
+        layout.addWidget(title_label)
+        
+        return section, layout
 
-    def _create_left_panel(self):
-        widget = QWidget()
-        layout = QVBoxLayout(widget)
-
+    def _create_group_section(self):
+        """グループ管理セクションの作成"""
+        section, layout = self._create_section("グループ管理")
+        
         # グループ選択
-        group_layout = QVBoxLayout()
-        group_layout.addWidget(QLabel("グループ:"))
+        group_layout = QHBoxLayout()
+        group_layout.addWidget(QLabel('グループ:'))
         self.group_combo = QComboBox()
-        self.group_combo.currentIndexChanged.connect(self._on_group_changed)
+        self.group_combo.currentIndexChanged.connect(self.on_group_selected)
         group_layout.addWidget(self.group_combo)
         layout.addLayout(group_layout)
-
-        # ユーザーリスト
-        layout.addWidget(QLabel("ユーザー:"))
-        self.user_list = QListWidget()
-        self.user_list.currentItemChanged.connect(self._on_user_selected)
-        layout.addWidget(self.user_list)
-
-        # ユーザー操作ボタン
-        button_layout = QVBoxLayout()
-        for label, slot in [
-            ("ユーザー追加", self._add_user),
-            ("ユーザー編集", self._edit_user),
-            ("ユーザー削除", self._delete_user)
-        ]:
-            btn = QPushButton(label)
-            btn.clicked.connect(slot)
-            button_layout.addWidget(btn)
+        
+        # ボタン
+        button_layout = QHBoxLayout()
+        add_group_btn = QPushButton('グループ追加')
+        add_group_btn.clicked.connect(self.show_add_group_dialog)
+        button_layout.addWidget(add_group_btn)
         layout.addLayout(button_layout)
-
-        return widget
-
-    def _create_right_panel(self):
-        self.tab_widget = QTabWidget()
         
-        # システム管理タブ
-        self.system_tab = SystemTab(self.system_info)
-        self.tab_widget.addTab(self.system_tab, "システム管理")
-        
-        # カテゴリー管理タブ
-        self.category_tab = CategoryTab()
-        self.tab_widget.addTab(self.category_tab, "カテゴリー管理")
-        
-        # データ入出力タブ
-        self.data_io_tab = DataIOTab()
-        self.tab_widget.addTab(self.data_io_tab, "データ入出力")
-        
-        # レーダーチャートタブ
-        self.radar_tab = RadarChartTab()
-        self.tab_widget.addTab(self.radar_tab, "総合評価")
+        return section
 
-        return self.tab_widget
+    def _create_user_section(self):
+        """ユーザー管理セクションの作成"""
+        section, layout = self._create_section("ユーザー管理")
+        
+        # ユーザーリスト
+        self.user_list = QListWidget()
+        self.user_list.itemSelectionChanged.connect(self.on_user_selected)
+        layout.addWidget(self.user_list)
+        
+        # ボタン
+        button_layout = QHBoxLayout()
+        add_user_btn = QPushButton('ユーザー追加')
+        add_user_btn.clicked.connect(self.show_add_user_dialog)
+        button_layout.addWidget(add_user_btn)
+        layout.addLayout(button_layout)
+        
+        return section
 
-    def _load_initial_data(self):
-        """初期データの読み込み"""
-        self._load_groups()
-        self._load_users()
+    def _create_category_section(self):
+        """カテゴリー管理セクションの作成"""
+        section, layout = self._create_section("カテゴリー管理")
+        
+        # カテゴリーリスト
+        self.category_list = QListWidget()
+        layout.addWidget(self.category_list)
+        
+        # ボタン
+        button_layout = QHBoxLayout()
+        add_category_btn = QPushButton('カテゴリー追加')
+        add_category_btn.clicked.connect(self.show_add_category_dialog)
+        button_layout.addWidget(add_category_btn)
+        layout.addLayout(button_layout)
+        
+        return section
 
-    def _load_groups(self):
-        """グループ一覧の読み込み"""
+    def _create_skill_tab(self, category_id, category_name):
+        """スキルタブの作成"""
+        tab = QWidget()
+        layout = QVBoxLayout(tab)
+        
+        # スキルグリッド
+        skills = self.db.get_skills_in_category(category_id)
+        skill_names = [skill[1] for skill in skills]
+        grid = SkillGridWidget(skill_names)
+        grid.skillLevelsChanged.connect(
+            lambda levels: self._update_skill_levels(category_id, levels)
+        )
+        
+        layout.addWidget(grid)
+        
+        # スキル追加ボタン
+        add_skill_btn = QPushButton('スキル追加')
+        add_skill_btn.clicked.connect(
+            lambda: self.show_add_skill_dialog(category_id)
+        )
+        layout.addWidget(add_skill_btn)
+        
+        return tab, grid
+
+    def refresh_groups(self):
+        """グループリストの更新"""
+        if not self.db:
+            return
+        
         self.group_combo.clear()
-        groups = self.group_manager.get_all_groups()
-        for group in groups:
-            self.group_combo.addItem(group.name, group.id)
+        groups = self.db.get_groups()
+        for group_id, group_name in groups:
+            self.group_combo.addItem(group_name, group_id)
 
-    def _load_users(self):
-        """ユーザー一覧の読み込み"""
+    def refresh_users(self):
+        """ユーザーリストの更新"""
+        if not self.db:
+            return
+        
         self.user_list.clear()
         group_id = self.group_combo.currentData()
-        if group_id:
-            users = self.user_manager.get_users_by_group(group_id)
-            for user in users:
-                self.user_list.addItem(user.name)
+        if group_id is not None:
+            users = self.db.get_users_in_group(group_id)
+            for user_id, user_name in users:
+                item = QListWidgetItem(user_name, self.user_list)
+                item.setData(Qt.UserRole, user_id)
 
-    def _add_user(self):
+    def refresh_categories(self):
+        """カテゴリーの更新"""
+        if not self.db:
+            return
+        
+        try:
+            self.category_list.clear()
+            categories = self.db.get_categories()
+            self.categories = [cat[1] for cat in categories]
+            for cat_id, cat_name in categories:
+                item = QListWidgetItem(cat_name)
+                item.setData(Qt.UserRole, cat_id)
+                self.category_list.addItem(item)
+            
+            self.radar_chart.set_categories(self.categories)
+            self.update_skill_view()
+        except Exception as e:
+            QMessageBox.warning(self, 'エラー', f'カテゴリーの更新に失敗しました: {e}')
+
+    def show_add_group_dialog(self):
+        """グループ追加ダイアログの表示"""
+        dialog = QDialog(self)
+        dialog.setWindowTitle('グループ追加')
+        layout = QVBoxLayout(dialog)
+        
+        # 入力フィールド
+        name_edit = QLineEdit()
+        layout.addWidget(QLabel('グループ名:'))
+        layout.addWidget(name_edit)
+        
+        # ボタン
+        button_box = QHBoxLayout()
+        ok_btn = QPushButton('追加')
+        cancel_btn = QPushButton('キャンセル')
+        
+        ok_btn.clicked.connect(lambda: self._add_group(name_edit.text(), dialog))
+        cancel_btn.clicked.connect(dialog.reject)
+        
+        button_box.addWidget(ok_btn)
+        button_box.addWidget(cancel_btn)
+        layout.addLayout(button_box)
+        
+        dialog.exec_()
+
+    def show_add_user_dialog(self):
+        """ユーザー追加ダイアログの表示"""
+        if self.group_combo.currentData() is None:
+            QMessageBox.warning(self, 'エラー', 'グループを選択してください')
+            return
+        
+        dialog = QDialog(self)
+        dialog.setWindowTitle('ユーザー追加')
+        layout = QVBoxLayout(dialog)
+        
+        # 入力フィールド
+        name_edit = QLineEdit()
+        layout.addWidget(QLabel('ユーザー名:'))
+        layout.addWidget(name_edit)
+        
+        # ボタン
+        button_box = QHBoxLayout()
+        ok_btn = QPushButton('追加')
+        cancel_btn = QPushButton('キャンセル')
+        
+        ok_btn.clicked.connect(lambda: self._add_user(name_edit.text(), dialog))
+        cancel_btn.clicked.connect(dialog.reject)
+        
+        button_box.addWidget(ok_btn)
+        button_box.addWidget(cancel_btn)
+        layout.addLayout(button_box)
+        
+        dialog.exec_()
+
+    def show_add_category_dialog(self):
+        """カテゴリー追加ダイアログの表示"""
+        dialog = QDialog(self)
+        dialog.setWindowTitle('カテゴリー追加')
+        layout = QVBoxLayout(dialog)
+        
+        # 入力フィールド
+        name_edit = QLineEdit()
+        layout.addWidget(QLabel('カテゴリー名:'))
+        layout.addWidget(name_edit)
+        
+        # ボタン
+        button_box = QHBoxLayout()
+        ok_btn = QPushButton('追加')
+        cancel_btn = QPushButton('キャンセル')
+        
+        ok_btn.clicked.connect(lambda: self._add_category(name_edit.text(), dialog))
+        cancel_btn.clicked.connect(dialog.reject)
+        
+        button_box.addWidget(ok_btn)
+        button_box.addWidget(cancel_btn)
+        layout.addLayout(button_box)
+        
+        dialog.exec_()
+
+    def show_add_skill_dialog(self, category_id):
+        """スキル追加ダイアログの表示"""
+        dialog = QDialog(self)
+        dialog.setWindowTitle('スキル追加')
+        layout = QVBoxLayout(dialog)
+        
+        # 入力フィールド
+        name_edit = QLineEdit()
+        layout.addWidget(QLabel('スキル名:'))
+        layout.addWidget(name_edit)
+        
+        # ボタン
+        button_box = QHBoxLayout()
+        ok_btn = QPushButton('追加')
+        cancel_btn = QPushButton('キャンセル')
+        
+        ok_btn.clicked.connect(
+            lambda: self._add_skill(category_id, name_edit.text(), dialog)
+        )
+        cancel_btn.clicked.connect(dialog.reject)
+        
+        button_box.addWidget(ok_btn)
+        button_box.addWidget(cancel_btn)
+        layout.addLayout(button_box)
+        
+        dialog.exec_()
+
+    def _add_group(self, name, dialog):
+        """グループの追加"""
+        if not name:
+            QMessageBox.warning(dialog, 'エラー', 'グループ名を入力してください')
+            return
+        
+        try:
+            self.db.add_group(name)
+            self.refresh_groups()
+            dialog.accept()
+        except Exception as e:
+            QMessageBox.critical(dialog, 'エラー', f'グループの追加に失敗しました: {e}')
+
+    def _add_user(self, name, dialog):
         """ユーザーの追加"""
-        from .dialogs.user_dialog import UserDialog
-        dialog = UserDialog(self)
-        if dialog.exec_():
-            self._load_users()
-
-    def _edit_user(self):
-        """ユーザーの編集"""
-        current = self.user_list.currentItem()
-        if not current:
-            QMessageBox.warning(self, "選択エラー", "編集するユーザーを選択してください。")
+        if not name:
+            QMessageBox.warning(dialog, 'エラー', 'ユーザー名を入力してください')
             return
         
-        from .dialogs.user_dialog import UserDialog
-        dialog = UserDialog(self, current.text())
-        if dialog.exec_():
-            self._load_users()
+        try:
+            group_id = self.group_combo.currentData()
+            self.db.add_user(name, group_id)
+            self.refresh_users()
+            dialog.accept()
+        except Exception as e:
+            QMessageBox.critical(dialog, 'エラー', f'ユーザーの追加に失敗しました: {e}')
 
-    def _delete_user(self):
-        """ユーザーの削除"""
-        current = self.user_list.currentItem()
-        if not current:
-            QMessageBox.warning(self, "選択エラー", "削除するユーザーを選択してください。")
+    def _add_category(self, name, dialog):
+        """カテゴリーの追加"""
+        if not name:
+            QMessageBox.warning(dialog, 'エラー', 'カテゴリー名を入力してください')
             return
         
-        reply = QMessageBox.question(
-            self,
-            "削除確認",
-            f"ユーザー '{current.text()}' を削除しますか？",
-            QMessageBox.Yes | QMessageBox.No,
-            QMessageBox.No
-        )
+        try:
+            self.db.add_category(name)
+            self.refresh_categories()
+            dialog.accept()
+        except Exception as e:
+            QMessageBox.critical(dialog, 'エラー', f'カテゴリーの追加に失敗しました: {e}')
+
+    def _add_skill(self, category_id, name, dialog):
+        """スキルの追加"""
+        if not name:
+            QMessageBox.warning(dialog, 'エラー', 'スキル名を入力してください')
+            return
         
-        if reply == QMessageBox.Yes:
-            # TODO: 削除処理の実装
-            self._load_users()
+        try:
+            self.db.add_skill(name, category_id)
+            self.update_skill_view()
+            dialog.accept()
+        except Exception as e:
+            QMessageBox.critical(dialog, 'エラー', f'スキルの追加に失敗しました: {e}')
 
-    def closeEvent(self, event):
-        """アプリケーション終了時の処理"""
-        reply = QMessageBox.question(
-            self,
-            '確認',
-            "アプリケーションを終了しますか？",
-            QMessageBox.Yes | QMessageBox.No,
-            QMessageBox.No
-        )
+    def _update_skill_levels(self, category_id, levels):
+        """スキルレベルの更新"""
+        if not self.current_user_id:
+            return
+        
+        try:
+            for skill_name, level in levels.items():
+                skill_id = self.db.get_skill_id(category_id, skill_name)
+                if skill_id:
+                    self.db.update_skill_level(
+                        self.current_user_id, skill_id, level
+                    )
+            
+            # レーダーチャートの更新
+            self.update_radar_chart()
+        except Exception as e:
+            QMessageBox.warning(
+                self, 'エラー', f'スキルレベルの更新に失敗しました: {e}'
+            )
 
-        if reply == QMessageBox.Yes:
-            self.logger.info("アプリケーションを終了します")
-            event.accept()
-        else:
-            event.ignore()
+    def on_group_selected(self, index):
+        """グループ選択時の処理"""
+        self.refresh_users()
+        self.current_user_id = None
+        self.update_skill_view()
+
+    def on_user_selected(self):
+        """ユーザー選択時の処理"""
+        current_item = self.user_list.currentItem()
+        if current_item:
+            self.current_user_id = current_item.data(Qt.UserRole)
+            self.update_skill_view()
+
+    def update_skill_view(self):
+        """スキルビューの更新"""
+        try:
+            # タブをクリア
+            self.skill_tabs.clear()
+            
+            # カテゴリごとにタブを作成
+            self.skill_grids = {}  # カテゴリIDごとのグリッドを保持
+            categories = self.db.get_categories()
+            
+            for category_id, category_name in categories:
+                tab, grid = self._create_skill_tab(category_id, category_name)
+                self.skill_tabs.addTab(tab, category_name)
+                self.skill_grids[category_id] = grid
+            
+            # 現在のユーザーのスキルレベルを設定
+            if self.current_user_id:
+                self.load_user_skills()
+        
+        except Exception as e:
+            QMessageBox.warning(
+                self, 'エラー', f'スキルビューの更新に失敗しました: {e}'
+            )
+    
+    def load_user_skills(self):
+        """ユーザーのスキルレベルを読み込み"""
+        try:
+            for category_id, grid in self.skill_grids.items():
+                skills = self.db.get_user_skills(
+                    self.current_user_id, category_id
+                )
+                levels = {skill[0]: skill[1] for skill in skills}
+                grid.set_levels(levels)
+            
+            # レーダーチャートの更新
+            self.update_radar_chart()
+        
+        except Exception as e:
+            QMessageBox.warning(
+                self, 'エラー', f'スキルレベルの読み込みに失敗しました: {e}'
+            )
+    
+    def update_radar_chart(self):
+        """レーダーチャートの更新"""
+        try:
+            if not self.current_user_id:
+                self.radar_chart.update_data([0] * len(self.categories))
+                return
+            
+            # カテゴリごとの平均スキルレベルを計算
+            levels = []
+            for category_id, _ in self.db.get_categories():
+                skills = self.db.get_user_skills(
+                    self.current_user_id, category_id
+                )
+                if skills:
+                    avg_level = sum(skill[1] for skill in skills) / len(skills)
+                    levels.append(avg_level)
+                else:
+                    levels.append(0)
+            
+            self.radar_chart.update_data(levels)
+        
+        except Exception as e:
+            QMessageBox.warning(
+                self, 'エラー', f'レーダーチャートの更新に失敗しました: {e}'
+            )

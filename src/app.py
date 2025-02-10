@@ -1,5 +1,6 @@
-"""アプリケーションのエントリーポイント
-Created: 2025-02-08 20:41:10
+"""
+スキルマトリックスマネージャー アプリケーションエントリーポイント
+Created: 2025-02-08 22:17:10
 Author: GingaDza
 """
 import sys
@@ -8,15 +9,17 @@ from .views.main_window import MainWindow
 from .utils.logger import setup_logger
 
 def main():
-    """メイン関数"""
+    """アプリケーションのメインエントリーポイント"""
     logger = setup_logger(__name__)
-    logger.info("アプリケーションを開始します")
+    logger.info("アプリケーションを起動します")
     
     app = QApplication(sys.argv)
+    app.setStyle('Fusion')  # モダンなルック&フィールを適用
+    
     window = MainWindow()
     window.show()
     
     sys.exit(app.exec_())
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     main()
